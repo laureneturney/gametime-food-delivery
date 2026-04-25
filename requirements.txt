@@ -1,0 +1,10 @@
+streamlit>=1.31,<2.0
+python-dotenv>=1.0,<2.0
+httpx>=0.25,<1.0
+pydantic>=2.5,<3.0
+
+# To use IBM watsonx.ai (LLM_PROVIDER=watsonx), also install:
+#     pip install -r requirements-watsonx.txt
+# It's kept separate because it pulls in heavy native deps (pandas, numpy,
+# pyarrow) that aren't needed for the mock or custom-OpenAI providers, and
+# may fail to build on bleeding-edge Python versions (e.g. 3.14).

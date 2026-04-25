@@ -1,0 +1,5 @@
+# Optional — install only when LLM_PROVIDER=watsonx.
+# Heavy native deps (pandas/numpy/pyarrow) that may need a recent stable Python
+# (3.10–3.12 recommended). On Python 3.14 this can fail because pandas wheels
+# aren't published yet.
+ibm-watsonx-ai>=1.0,<2.0
