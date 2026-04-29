@@ -481,51 +481,6 @@ with tab_order:
             else:
                 st.error(order_rec.get("error", "Could not place order."))
 
-    # ---- RIGHT: live concession status + recommendation -------------------
-    with right:
-        # "Your selection" summary so the user always knows what they've picked.
-        sel_method = st.session_state.get("delivery_method")
-        sel_item_id = st.session_state.get("selected_item_id")
-        sel_item = next((i for i in _all_menu_items() if i["id"] == sel_item_id), None) if sel_item_id else None
-        sel_section = stadium["sections"][st.session_state["section_id"]]
-        if sel_method == "delivery":
-            method_chip = "🪑 Delivery"
-        elif sel_method == "pickup":
-            method_chip = "🚶 Pickup"
-        else:
-            method_chip = "⚪ method not set"
-        if sel_item:
-            item_chip = f"🍽 {sel_item['name']} · ${sel_item['price']:.2f}"
-        else:
-            item_chip = "⚪ item not picked"
-        st.markdown(
-            f"<div class='conc-card' style='border-color:#1565c0;'>"
-            f"<strong>Your selection</strong><br>"
-            f"<span class='small-muted'>"
-            f"🪑 Seat {st.session_state['seat_number']} ({sel_section['name']}) · "
-            f"⏱️ Minute {minute} · {method_chip} · {item_chip}"
-            f"</span></div>",
-            unsafe_allow_html=True,
-        )
-
-        st.subheader("Live concession status")
-        st.caption(
-            f"Walking time and to-seat ETA are calculated from your seat "
-            f"(**{st.session_state['seat_number']}**, {sel_section['name']}). "
-            f"Move the slider or change your seat in the sidebar to see updates."
-        )
-
-        nearest = agent.tool_nearest_concession(st.session_state["seat_number"])
-        # Single cached markdown emission — much faster than 5 separate calls.
-        st.markdown(
-            _cached_status_cards_html(
-                minute=int(minute),
-                seat_number=int(st.session_state["seat_number"]),
-                nearest_id=nearest["concession_id"] or "",
-            ),
-            unsafe_allow_html=True,
-        )
-
         rec = st.session_state.get("last_recommendation")
         if rec and rec.get("success"):
             st.markdown("---")
@@ -572,7 +527,7 @@ with tab_order:
             with st.expander("🔍 What the agent saw (full analysis)"):
                 st.json(rec["analysis"])
 
-            if st.button("✅ Place this order", width="stretch"):
+            if st.button("✅ Place this order", width="stretch", key="place_order_from_rec"):
                 st.session_state["orders"].append({
                     "item_name":         rec["item"]["name"],
                     "item_price":        rec["item"]["price"],
@@ -587,6 +542,51 @@ with tab_order:
 
         elif rec and not rec.get("success"):
             st.error(rec.get("error", "Recommendation failed."))
+
+    # ---- RIGHT: live concession status -----------------------------------
+    with right:
+        # "Your selection" summary so the user always knows what they've picked.
+        sel_method = st.session_state.get("delivery_method")
+        sel_item_id = st.session_state.get("selected_item_id")
+        sel_item = next((i for i in _all_menu_items() if i["id"] == sel_item_id), None) if sel_item_id else None
+        sel_section = stadium["sections"][st.session_state["section_id"]]
+        if sel_method == "delivery":
+            method_chip = "🪑 Delivery"
+        elif sel_method == "pickup":
+            method_chip = "🚶 Pickup"
+        else:
+            method_chip = "⚪ method not set"
+        if sel_item:
+            item_chip = f"🍽 {sel_item['name']} · ${sel_item['price']:.2f}"
+        else:
+            item_chip = "⚪ item not picked"
+        st.markdown(
+            f"<div class='conc-card' style='border-color:#1565c0;'>"
+            f"<strong>Your selection</strong><br>"
+            f"<span class='small-muted'>"
+            f"🪑 Seat {st.session_state['seat_number']} ({sel_section['name']}) · "
+            f"⏱️ Minute {minute} · {method_chip} · {item_chip}"
+            f"</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        st.subheader("Live concession status")
+        st.caption(
+            f"Walking time and to-seat ETA are calculated from your seat "
+            f"(**{st.session_state['seat_number']}**, {sel_section['name']}). "
+            f"Move the slider or change your seat in the sidebar to see updates."
+        )
+
+        nearest = agent.tool_nearest_concession(st.session_state["seat_number"])
+        # Single cached markdown emission — much faster than 5 separate calls.
+        st.markdown(
+            _cached_status_cards_html(
+                minute=int(minute),
+                seat_number=int(st.session_state["seat_number"]),
+                nearest_id=nearest["concession_id"] or "",
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 # ============================ GAME TAB =====================================
