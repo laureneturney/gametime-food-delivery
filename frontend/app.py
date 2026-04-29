@@ -528,12 +528,12 @@ with tab_order:
             with st.expander("🔍 What the agent saw (full analysis)"):
                 st.json(rec["analysis"])
 
-            if st.button("✅ Place this order", width="stretch", key="place_order_from_rec"):
+            def _place_rec_order(method: str) -> None:
                 st.session_state["orders"].append({
                     "item_name":         rec["item"]["name"],
                     "item_price":        rec["item"]["price"],
                     "concession_name":   rec["concession"]["name"],
-                    "delivery_method":   rec["delivery_method"],
+                    "delivery_method":   method,
                     "minute":            minute,
                     "eta_minutes":       timing["total_time_minutes"],
                     "placed_at":         datetime.now().isoformat(timespec="seconds"),
@@ -543,7 +543,39 @@ with tab_order:
                     f"ETA ~{timing['total_time_minutes']}m",
                     icon="🎉",
                 )
-                st.rerun()
+
+            @st.dialog("Choose how you want it")
+            def _ask_method_then_place():
+                st.write(
+                    "Pick **delivery** or **pickup** before placing this order."
+                )
+                chosen = st.radio(
+                    "Delivery method",
+                    options=method_options,
+                    index=None,
+                    horizontal=True,
+                    format_func=lambda m: "🪑 Deliver to my seat"
+                                            if m == "delivery"
+                                            else "🚶 I'll pick it up",
+                    key="dialog_method_radio",
+                )
+                if st.button(
+                    "Confirm and place order",
+                    disabled=chosen is None,
+                    type="primary",
+                    width="stretch",
+                    key="dialog_confirm_place",
+                ):
+                    st.session_state["delivery_method"] = chosen
+                    _place_rec_order(chosen)
+                    st.rerun()
+
+            if st.button("✅ Place this order", width="stretch", key="place_order_from_rec"):
+                if st.session_state.get("delivery_method") not in method_options:
+                    _ask_method_then_place()
+                else:
+                    _place_rec_order(st.session_state["delivery_method"])
+                    st.rerun()
 
         elif rec and not rec.get("success"):
             st.error(rec.get("error", "Recommendation failed."))
