@@ -160,6 +160,75 @@ def _all_menu_items() -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Heavy-computation caches — keyed only by inputs that actually change.
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def _cached_status_cards_html(minute: int, seat_number: int, nearest_id: str) -> str:
+    """Render all 5 concession cards as a single HTML blob (one st.markdown call)."""
+    status = _agent().tool_concession_status(event_minute=minute, seat_number=seat_number)
+    parts: List[str] = []
+    for cid, c in status.items():
+        badge = "  📍 *nearest to you*" if cid == nearest_id else ""
+        walk_minutes = c.get("walk_minutes", "?")
+        personal_eta = c.get("personalized_delivery_time", c["delivery_time"])
+        parts.append(
+            f"<div class='conc-card'>"
+            f"<strong>{c['name']}</strong>{badge}<br>"
+            f"<span class='small-muted'>{c['floor'].title()} level · "
+            f"{c['area'].replace('_', ' ')} · serves: {', '.join(c['menu_categories'])}</span><br>"
+            f"⏰ Line wait: <strong>{c['line_wait']}m</strong> · "
+            f"👥 Queue: <strong>{c['queue_length']}</strong> · "
+            f"🍳 Avg prep: <strong>{c['prep_time']}m</strong> · "
+            f"🚶 Walking time: <strong>{walk_minutes}m</strong> · "
+            f"🚚 To-seat ETA: <strong>{personal_eta}m</strong>"
+            f"</div>"
+        )
+    return "".join(parts)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_section_rows() -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for sid, sec in _stadium()["sections"].items():
+        rows.append({
+            "Section":   sid,
+            "Name":      sec["name"],
+            "Floor":     sec["floor"],
+            "Area":      sec["area"].replace("_", " "),
+            "Seats":     sec["seat_range"],
+            "Capacity":  sec["capacity"],
+        })
+    return rows
+
+
+@st.cache_data(show_spinner=False)
+def _cached_concession_distance_rows(cid: str) -> List[Dict[str, Any]]:
+    c = _concessions()[cid]
+    sections = _stadium()["sections"]
+    return [
+        {"Section": sid, "Section name": sections[sid]["name"],
+         "Distance": d, "Walk minutes": max(1, int(round(d / 10)))}
+        for sid, d in c["distance_from_sections"].items()
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def _cached_game_timeline() -> Dict[str, Any]:
+    return _agent().get_game_timeline()
+
+
+# Quick-jump scenarios for the demo
+_DEMO_SCENARIOS = [
+    ("⚡ Tipoff",       3,  "Opening minutes — medium lag, fans settling in"),
+    ("✅ Mid-Game",    30,  "Lull in the action — best ordering window"),
+    ("🔥 Halftime",    50,  "Peak rush — concessions slammed"),
+    ("✅ Late 3rd",    70,  "Crowd thinning — good time to order"),
+    ("🏁 Crunch Time", 92,  "Final minutes — moderate lag"),
+]
+
+
+# ---------------------------------------------------------------------------
 # Sidebar — provider + seat + game time
 # ---------------------------------------------------------------------------
 
@@ -184,19 +253,25 @@ with st.sidebar:
         st.session_state["section_id"] = current_section
         st.session_state["seat_number"] = sections[current_section]["seats"][0]
 
-    seat_choices = sections[st.session_state["section_id"]]["seats"]
-    seat_number = st.selectbox(
-        "Seat number",
-        options=seat_choices,
-        index=seat_choices.index(st.session_state["seat_number"])
-              if st.session_state["seat_number"] in seat_choices else 0,
-        key="seat_select",
-    )
-    st.session_state["seat_number"] = seat_number
-
     sec_info = sections[st.session_state["section_id"]]
+    seat_min = sec_info["seats"][0]
+    seat_max = sec_info["seats"][-1]
+    if st.session_state["seat_number"] not in sec_info["seats"]:
+        st.session_state["seat_number"] = seat_min
+
+    seat_number = st.number_input(
+        f"Seat number ({seat_min}–{seat_max})",
+        min_value=seat_min,
+        max_value=seat_max,
+        value=int(st.session_state["seat_number"]),
+        step=1,
+        key="seat_input",
+        help=f"Type or step through the {sec_info['capacity']} seats in this section.",
+    )
+    st.session_state["seat_number"] = int(seat_number)
+
     st.caption(
-        f"Floor: **{sec_info['floor']}**  ·  Area: **{sec_info['area'].replace('_', ' ')}**  ·  "
+        f"Floor: **{sec_info['floor']}** · Area: **{sec_info['area'].replace('_', ' ')}** · "
         f"Seats {sec_info['seat_range']}"
     )
 
@@ -212,6 +287,15 @@ with st.sidebar:
     )
     st.session_state["event_minute"] = minute
 
+    # Quick-jump demo scenarios — one click to land on an interesting moment.
+    with st.expander("⚡ Jump to a moment"):
+        st.caption("Skip the slider — try the agent at these key game moments.")
+        for label, m, desc in _DEMO_SCENARIOS:
+            if st.button(f"{label} · min {m}", key=f"jump_{m}", width="stretch",
+                         help=desc):
+                st.session_state["event_minute"] = m
+                st.rerun()
+
     agent = _agent()
     agent.set_event_time(minute)
     lag = agent.tool_lag_intensity()
@@ -223,17 +307,29 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 🧾 Order History")
-    if not st.session_state["orders"]:
+    orders = st.session_state["orders"]
+    if not orders:
         st.caption("No orders yet — place one from the **Order** tab.")
     else:
-        for i, order in enumerate(reversed(st.session_state["orders"]), start=1):
-            st.markdown(
-                f"**#{len(st.session_state['orders']) - i + 1}** · "
-                f"{order['item_name']} @ minute {order['minute']}  \n"
+        # Render the most-recent 5 in a single markdown call (much faster than
+        # one st.markdown() per order, which is what made the section feel slow
+        # to appear once orders accumulate).
+        recent = list(reversed(orders))[:5]
+        lines = []
+        total_orders = len(orders)
+        for i, order in enumerate(recent):
+            n = total_orders - i
+            lines.append(
+                f"**#{n}** · {order['item_name']} @ minute {order['minute']}  "
                 f"<span class='small-muted'>{order['concession_name']} · "
-                f"{order['delivery_method']} · ~{order['eta_minutes']}m</span>",
-                unsafe_allow_html=True,
+                f"{order['delivery_method']} · ~{order['eta_minutes']}m</span>"
             )
+        st.markdown("<br>".join(lines), unsafe_allow_html=True)
+        if total_orders > len(recent):
+            st.caption(f"…and {total_orders - len(recent)} earlier order(s).")
+        if st.button("Clear history", key="clear_orders"):
+            st.session_state["orders"] = []
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -270,9 +366,22 @@ with tab_order:
 
     # ---- LEFT: choose method + item ---------------------------------------
     with left:
-        st.subheader("1. Choose how you want it")
         method_options = ["delivery", "pickup"]
         prev_method = st.session_state.get("delivery_method")
+        sel_item_id = st.session_state.get("selected_item_id")
+        # Steps "checked" indicators
+        step1_done = prev_method in method_options
+        step2_done = sel_item_id is not None
+        st.markdown(
+            f"<div class='small-muted'>"
+            f"{'✅' if step1_done else '◻️'} Step 1 &nbsp;·&nbsp; "
+            f"{'✅' if step2_done else '◻️'} Step 2 &nbsp;·&nbsp; "
+            f"{'🟢 Ready to order' if (step1_done and step2_done) else '🟡 Fill in both to enable Place Order'}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        st.subheader("1. Choose how you want it")
         method = st.radio(
             "Delivery method",
             options=method_options,
@@ -374,36 +483,48 @@ with tab_order:
 
     # ---- RIGHT: live concession status + recommendation -------------------
     with right:
-        st.subheader("Live concession status")
-        st.caption(
-            f"Snapshot at minute **{minute}** · "
-            f"walking time and to-seat ETA are calculated from your selected "
-            f"seat (**{st.session_state['seat_number']}**, "
-            f"{stadium['sections'][st.session_state['section_id']]['name']})."
+        # "Your selection" summary so the user always knows what they've picked.
+        sel_method = st.session_state.get("delivery_method")
+        sel_item_id = st.session_state.get("selected_item_id")
+        sel_item = next((i for i in _all_menu_items() if i["id"] == sel_item_id), None) if sel_item_id else None
+        sel_section = stadium["sections"][st.session_state["section_id"]]
+        if sel_method == "delivery":
+            method_chip = "🪑 Delivery"
+        elif sel_method == "pickup":
+            method_chip = "🚶 Pickup"
+        else:
+            method_chip = "⚪ method not set"
+        if sel_item:
+            item_chip = f"🍽 {sel_item['name']} · ${sel_item['price']:.2f}"
+        else:
+            item_chip = "⚪ item not picked"
+        st.markdown(
+            f"<div class='conc-card' style='border-color:#1565c0;'>"
+            f"<strong>Your selection</strong><br>"
+            f"<span class='small-muted'>"
+            f"🪑 Seat {st.session_state['seat_number']} ({sel_section['name']}) · "
+            f"⏱️ Minute {minute} · {method_chip} · {item_chip}"
+            f"</span></div>",
+            unsafe_allow_html=True,
         )
 
-        status = agent.tool_concession_status(seat_number=st.session_state["seat_number"])
-        nearest = agent.tool_nearest_concession(st.session_state["seat_number"])
+        st.subheader("Live concession status")
+        st.caption(
+            f"Walking time and to-seat ETA are calculated from your seat "
+            f"(**{st.session_state['seat_number']}**, {sel_section['name']}). "
+            f"Move the slider or change your seat in the sidebar to see updates."
+        )
 
-        for cid, c in status.items():
-            badge = "  📍 *nearest to you*" if cid == nearest["concession_id"] else ""
-            walk_minutes = c.get("walk_minutes", "?")
-            personal_eta = c.get("personalized_delivery_time", c["delivery_time"])
-            st.markdown(
-                f"""
-                <div class="conc-card">
-                    <strong>{c['name']}</strong>{badge}<br>
-                    <span class='small-muted'>{c['floor'].title()} level · {c['area'].replace('_', ' ')}
-                    · serves: {", ".join(c['menu_categories'])}</span><br>
-                    ⏰ Line wait: <strong>{c['line_wait']}m</strong> ·
-                    👥 Queue: <strong>{c['queue_length']}</strong> ·
-                    🍳 Avg prep: <strong>{c['prep_time']}m</strong> ·
-                    🚶 Walking time: <strong>{walk_minutes}m</strong> ·
-                    🚚 To-seat ETA: <strong>{personal_eta}m</strong>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        nearest = agent.tool_nearest_concession(st.session_state["seat_number"])
+        # Single cached markdown emission — much faster than 5 separate calls.
+        st.markdown(
+            _cached_status_cards_html(
+                minute=int(minute),
+                seat_number=int(st.session_state["seat_number"]),
+                nearest_id=nearest["concession_id"] or "",
+            ),
+            unsafe_allow_html=True,
+        )
 
         rec = st.session_state.get("last_recommendation")
         if rec and rec.get("success"):
@@ -485,7 +606,7 @@ with tab_game:
         )
 
     st.markdown("#### Period structure")
-    timeline = agent.get_game_timeline()
+    timeline = _cached_game_timeline()
     for p in timeline["periods"]:
         st.markdown(f"**{p['name']}** (min {p['start']}–{p['end']})")
         cols = st.columns(len(p["samples"]))
@@ -509,17 +630,7 @@ with tab_stadium:
     c3.metric("Concession stands", len(_concessions()))
 
     st.markdown("#### Sections")
-    section_rows = []
-    for sid, sec in stadium["sections"].items():
-        section_rows.append({
-            "Section":   sid,
-            "Name":      sec["name"],
-            "Floor":     sec["floor"],
-            "Area":      sec["area"].replace("_", " "),
-            "Seats":     sec["seat_range"],
-            "Capacity":  sec["capacity"],
-        })
-    st.dataframe(section_rows, width="stretch", hide_index=True)
+    st.dataframe(_cached_section_rows(), width="stretch", hide_index=True)
 
     st.markdown("#### Concession stands")
     for cid, c in _concessions().items():
@@ -527,14 +638,10 @@ with tab_stadium:
             st.write(f"Serves: {', '.join(c['menu_categories'])}")
             st.write(f"Base capacity: {c['base_capacity']} orders/min (calm period)")
             st.markdown("**Distance from each section** (stadium units, ~10 = 1 walk minute):")
-            dist_rows = [
-                {"Section": sid,
-                 "Section name": stadium["sections"][sid]["name"],
-                 "Distance": d,
-                 "Walk minutes": max(1, int(round(d / 10)))}
-                for sid, d in c["distance_from_sections"].items()
-            ]
-            st.dataframe(dist_rows, width="stretch", hide_index=True)
+            st.dataframe(
+                _cached_concession_distance_rows(cid),
+                width="stretch", hide_index=True,
+            )
 
     st.markdown("#### How the agent works")
     st.markdown(
