@@ -472,12 +472,13 @@ with tab_order:
                     "eta_minutes":       order_rec["timing"]["total_time_minutes"],
                     "placed_at":         datetime.now().isoformat(timespec="seconds"),
                 })
-                st.success(
-                    f"Order placed! **{order_rec['item']['name']}** from "
-                    f"**{order_rec['concession']['name']}** — ETA "
-                    f"~{order_rec['timing']['total_time_minutes']} minutes."
+                st.toast(
+                    f"✅ Order placed: {order_rec['item']['name']} from "
+                    f"{order_rec['concession']['name']} — ETA "
+                    f"~{order_rec['timing']['total_time_minutes']}m",
+                    icon="🎉",
                 )
-                st.balloons()
+                st.rerun()
             else:
                 st.error(order_rec.get("error", "Could not place order."))
 
@@ -537,8 +538,12 @@ with tab_order:
                     "eta_minutes":       timing["total_time_minutes"],
                     "placed_at":         datetime.now().isoformat(timespec="seconds"),
                 })
-                st.success(f"Order placed! Estimated arrival in ~{timing['total_time_minutes']} minutes.")
-                st.balloons()
+                st.toast(
+                    f"✅ Order placed: {rec['item']['name']} — "
+                    f"ETA ~{timing['total_time_minutes']}m",
+                    icon="🎉",
+                )
+                st.rerun()
 
         elif rec and not rec.get("success"):
             st.error(rec.get("error", "Recommendation failed."))
